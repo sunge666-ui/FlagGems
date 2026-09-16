@@ -17,7 +17,7 @@ from .bincount import bincount
 from .concat_and_cache_mla import concat_and_cache_mla
 from .cross_entropy_loss import cross_entropy_loss
 from .flash_mla import flash_mla
-from .fused_add_rms_norm import fused_add_rms_norm
+from .fused_add_rms_norm import add_rms_norm, fused_add_rms_norm
 
 # fused_deepseek_v4_qnorm_rope_kv_rope_insert vendor kernel (XPU): the generic
 # kernel neither compiles (reduction inside a `while` grid-stride loop aborts
@@ -56,6 +56,7 @@ __all__ = [
     "beam_search_score_",
     "skip_layer_norm",
     "fused_add_rms_norm",
+    "add_rms_norm",
     "silu_and_mul",
     "silu_and_mul_out",
     "silu_and_mul_with_clamp",

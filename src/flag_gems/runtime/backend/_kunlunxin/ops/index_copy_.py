@@ -11,99 +11,51 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+import math
+
+import torch
 import triton
 import triton.language as tl
 
 from flag_gems.utils import libentry
 
 
-@libentry()
-@triton.jit
-def _index_copy_rank1(
-    inp,
-    index,
-    src,
-    n_elements,
-    inp_stride0,
-    src_stride0,
-    BLOCK: tl.constexpr,
-):
-    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-    mask = offsets < n_elements
-    indices = tl.load(index + offsets, mask=mask, other=0)
-    src_values = tl.load(src + offsets * src_stride0, mask=mask)
-    tl.store(inp + indices * inp_stride0, src_values, mask=mask)
+# Kunlunxin override for index_copy / index_copy_.
+#
+# The previous rank1/2/3 kernels loaded the dim index as a vector
+# (`tl.load(index + index_coord)`), where index_coord for dim=0 changes only
+# every `inner`-th lane. Triton XPU mis-compiles that "mostly-constant vector
+# gather" and returns stale values at the block transition, producing wrong
+# results at the first few columns of every row (see the accuracy bug record).
+# The fix moves the dim index into grid axis 1 so `tl.load(index + i)` is a
+# scalar load, which sidesteps the buggy vectorized gather entirely.
 
 
 @libentry()
 @triton.jit
-def _index_copy_rank2(
-    inp,
+def _index_copy_scalar_kernel(
     index,
     src,
-    n_elements,
-    dim,
-    inp_shape0,
-    inp_shape1,
-    inp_stride0,
-    inp_stride1,
-    src_shape1,
-    src_stride0,
-    src_stride1,
+    out,
+    outer,
+    src_dim,
+    out_dim,
+    inner,
     BLOCK: tl.constexpr,
 ):
-    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-    mask = offsets < n_elements
-    coord0 = offsets // src_shape1
-    coord1 = offsets % src_shape1
-    index_coord = tl.where(dim == 0, coord0, coord1)
-    indices = tl.load(index + index_coord, mask=mask, other=0)
-    out_coord0 = tl.where(dim == 0, indices, coord0)
-    out_coord1 = tl.where(dim == 1, indices, coord1)
-    src_offset = coord0 * src_stride0 + coord1 * src_stride1
-    out_offset = out_coord0 * inp_stride0 + out_coord1 * inp_stride1
-    src_values = tl.load(src + src_offset, mask=mask)
-    tl.store(inp + out_offset, src_values, mask=mask)
-
-
-@libentry()
-@triton.jit
-def _index_copy_rank3(
-    inp,
-    index,
-    src,
-    n_elements,
-    dim,
-    inp_shape0,
-    inp_shape1,
-    inp_shape2,
-    inp_stride0,
-    inp_stride1,
-    inp_stride2,
-    src_shape1,
-    src_shape2,
-    src_stride0,
-    src_stride1,
-    src_stride2,
-    BLOCK: tl.constexpr,
-):
-    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-    mask = offsets < n_elements
-    coord0 = offsets // (src_shape1 * src_shape2)
-    remainder = offsets % (src_shape1 * src_shape2)
-    coord1 = remainder // src_shape2
-    coord2 = remainder % src_shape2
-    index_coord = tl.where(dim == 0, coord0, tl.where(dim == 1, coord1, coord2))
-    indices = tl.load(index + index_coord, mask=mask, other=0)
-    out_coord0 = tl.where(dim == 0, indices, coord0)
-    out_coord1 = tl.where(dim == 1, indices, coord1)
-    out_coord2 = tl.where(dim == 2, indices, coord2)
-    src_offset = coord0 * src_stride0 + coord1 * src_stride1 + coord2 * src_stride2
-    out_offset = (
-        out_coord0 * inp_stride0 + out_coord1 * inp_stride1 + out_coord2 * inp_stride2
-    )
-    src_values = tl.load(src + src_offset, mask=mask)
-    tl.store(inp + out_offset, src_values, mask=mask)
+    # grid = (cdiv(outer * inner, BLOCK), src_dim)
+    pid_w = tl.program_id(0)  # chunk of (outer * inner)
+    i = tl.program_id(1)  # scalar dim index
+    w = pid_w * BLOCK + tl.arange(0, BLOCK)
+    mask = w < outer * inner
+    o = w // inner
+    inner_off = w % inner
+    src_flat = (o * src_dim + i) * inner + inner_off
+    val = tl.load(src + src_flat, mask=mask, other=0.0)
+    dst_k = tl.load(index + i)  # scalar load, avoids the vectorized gather bug
+    dst_flat = (o * out_dim + dst_k) * inner + inner_off
+    tl.store(out + dst_flat, val, mask=mask)
 
 
 def _validate(inp, dim, index, src):
@@ -122,62 +74,44 @@ def _validate(inp, dim, index, src):
     ), "0 <= index < self.size(dim)"
 
 
+def _launch(inp, dim, index, src):
+    outer = math.prod(inp.shape[:dim])
+    inner = math.prod(inp.shape[dim + 1 :])
+    src_dim = src.size(dim)
+    out_dim = inp.size(dim)
+    block = 4096
+    grid = (triton.cdiv(outer * inner, block), src_dim)
+    _index_copy_scalar_kernel[grid](
+        index,
+        src,
+        inp,
+        outer,
+        src_dim,
+        out_dim,
+        inner,
+        BLOCK=block,
+        num_warps=8,
+    )
+
+
 def index_copy_(inp, dim, index, src):
-    assert -inp.ndim <= dim < inp.ndim, "Invalid dim"
     dim %= inp.ndim
     _validate(inp, dim, index, src)
-    n_elements = src.numel()
-    block = 4096
-    grid = (triton.cdiv(n_elements, block),)
-    if inp.ndim == 1:
-        _index_copy_rank1[grid](
-            inp,
-            index,
-            src,
-            n_elements,
-            inp.stride(0),
-            src.stride(0),
-            BLOCK=block,
-            num_warps=8,
-        )
-    elif inp.ndim == 2:
-        _index_copy_rank2[grid](
-            inp,
-            index,
-            src,
-            n_elements,
-            dim,
-            inp.size(0),
-            inp.size(1),
-            inp.stride(0),
-            inp.stride(1),
-            src.size(1),
-            src.stride(0),
-            src.stride(1),
-            BLOCK=block,
-            num_warps=8,
-        )
-    elif inp.ndim == 3:
-        _index_copy_rank3[grid](
-            inp,
-            index,
-            src,
-            n_elements,
-            dim,
-            inp.size(0),
-            inp.size(1),
-            inp.size(2),
-            inp.stride(0),
-            inp.stride(1),
-            inp.stride(2),
-            src.size(1),
-            src.size(2),
-            src.stride(0),
-            src.stride(1),
-            src.stride(2),
-            BLOCK=block,
-            num_warps=8,
-        )
-    else:
-        raise NotImplementedError("Kunlunxin index_copy_ supports ranks 1 through 3")
+    src = src.contiguous()
+    index = index.contiguous()
+    if not inp.is_contiguous():
+        # in-place on a non-contiguous input: run on a contiguous copy and write
+        # the result back (the scalar kernel assumes contiguous flat layout).
+        inp_c = inp.contiguous()
+        _launch(inp_c, dim, index, src)
+        inp.copy_(inp_c)
+        return inp
+    _launch(inp, dim, index, src)
     return inp
+
+
+def index_copy(inp, dim, index, src):
+    dim %= inp.ndim
+    _validate(inp, dim, index, src)
+    out = inp.clone()
+    return index_copy_(out, dim, index, src)
