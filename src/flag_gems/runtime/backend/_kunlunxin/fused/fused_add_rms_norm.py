@@ -16,6 +16,7 @@ import builtins
 import logging
 import math
 
+import torch
 import triton
 import triton.language as tl
 
@@ -261,3 +262,132 @@ def fused_add_rms_norm(x, residual, normalized_shape, weight, eps=1e-5):
                 x, residual, weight, N, 1, N, 1, N, eps, BLOCK_SIZE, need_mask
             )
     return x, residual
+
+
+@libentry()
+@triton.jit(do_not_specialize=["eps"])
+def add_rms_norm_kernel(
+    OUT,
+    X1,
+    X2,
+    W,
+    out_stride_r,
+    x1_stride_r,
+    x1_stride_c,
+    x2_stride_r,
+    x2_stride_c,
+    N,
+    eps,
+    BLOCK_SIZE: tl.constexpr,
+    NEED_MASK: tl.constexpr,
+):
+    pid = ext.program_id(0)
+    OUT += pid * out_stride_r
+    X1 += pid * x1_stride_r
+    X2 += pid * x2_stride_r
+
+    cols = tl.arange(0, BLOCK_SIZE)
+    if NEED_MASK:
+        mask = cols < N
+        x1 = tl.load(X1 + cols * x1_stride_c, mask, other=0.0).to(tl.float32)
+        x2 = tl.load(X2 + cols * x2_stride_c, mask, other=0.0).to(tl.float32)
+        x = x1 + x2
+        var = tl.sum(x * x / N, axis=0)
+        rrms = 1 / tl.sqrt(var + eps)
+        w = tl.load(W + cols, mask=mask, other=0.0)
+        y = (x * rrms).to(OUT.dtype.element_ty) * w
+        tl.store(OUT + cols, y, mask=mask)
+    else:
+        x1 = tl.load(X1 + cols * x1_stride_c).to(tl.float32)
+        x2 = tl.load(X2 + cols * x2_stride_c).to(tl.float32)
+        x = x1 + x2
+        var = tl.sum(x * x / N, axis=0)
+        rrms = 1 / tl.sqrt(var + eps)
+        w = tl.load(W + cols)
+        y = (x * rrms).to(OUT.dtype.element_ty) * w
+        tl.store(OUT + cols, y)
+
+
+@libentry()
+@triton.jit(do_not_specialize=["eps"])
+def add_rms_norm_kernel_tile(
+    OUT,
+    X1,
+    X2,
+    W,
+    N: tl.constexpr,
+    eps,
+    BLOCK_SIZE: tl.constexpr,
+    NEED_MASK: tl.constexpr,
+):
+    pid = ext.program_id(0)
+    _var_base = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
+    for off in range(0, N, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        if NEED_MASK:
+            mask = cols < N
+            x1 = tl.load(X1 + pid * N + cols, mask, other=0.0).to(tl.float32)
+            x2 = tl.load(X2 + pid * N + cols, mask, other=0.0).to(tl.float32)
+            x1 = tl.where(mask, x1, 0.0)
+            x2 = tl.where(mask, x2, 0.0)
+        else:
+            x1 = tl.load(X1 + pid * N + cols).to(tl.float32)
+            x2 = tl.load(X2 + pid * N + cols).to(tl.float32)
+        xx = x1 + x2
+        _var_base += xx * xx / N
+    var = tl.sum(_var_base)
+    rrms = 1 / tl.sqrt(var + eps)
+
+    for off in range(0, N, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        if NEED_MASK:
+            mask = cols < N
+            x1 = tl.load(X1 + pid * N + cols, mask, other=0.0).to(tl.float32)
+            x2 = tl.load(X2 + pid * N + cols, mask, other=0.0).to(tl.float32)
+            x1 = tl.where(mask, x1, 0.0)
+            x2 = tl.where(mask, x2, 0.0)
+            w = tl.load(W + cols, mask, other=0.0)
+            y = ((x1 + x2) * rrms).to(OUT.dtype.element_ty) * w
+            tl.store(OUT + pid * N + cols, y, mask=mask)
+        else:
+            x1 = tl.load(X1 + pid * N + cols).to(tl.float32)
+            x2 = tl.load(X2 + pid * N + cols).to(tl.float32)
+            w = tl.load(W + cols)
+            y = ((x1 + x2) * rrms).to(OUT.dtype.element_ty) * w
+            tl.store(OUT + pid * N + cols, y)
+
+
+def add_rms_norm(x1, x2, normalized_shape, weight, eps=1e-5):
+    """Out-of-place add_rms_norm: y = rms_norm(x1 + x2), inputs unmodified.
+
+    The generic `flag_gems.fused.add_rms_norm` (out-of-place) is broken on
+    non-power-of-2 normalized dims: its loop kernel's reverse-order second pass
+    uses `prev_multiple_of(N, TILE_N) = cdiv(N, TILE_N)*TILE_N - TILE_N`, which
+    overshoots N for non-multiples and silently skips the first TILE_N output
+    elements. This kunlunxin override runs a dedicated out-of-place fused kernel
+    (same add + rms_norm math as the tuned in-place fused_add_rms_norm), so it
+    is correct for every N without any extra clone round-trip.
+    """
+    logger.debug("GEMS_KUNLUNXIN ADD_RMS_NORM")
+    dim = x1.ndim - len(normalized_shape)
+    M = math.prod(x1.shape[:dim])
+    N = math.prod(normalized_shape)
+
+    BLOCK_SIZE = builtins.min(64 * 128, triton.next_power_of_2(N))
+    x1 = x1.contiguous()
+    x2 = x2.contiguous()
+    weight = weight.contiguous()
+    out = torch.empty_like(x1)
+
+    with torch_device_fn.device(x1.device):
+        if N > 64 * 128:
+            need_mask = (N % BLOCK_SIZE) != 0
+            add_rms_norm_kernel_tile[M,](
+                out, x1, x2, weight, N, eps, BLOCK_SIZE, need_mask
+            )
+        else:
+            need_mask = (N % BLOCK_SIZE) != 0
+            add_rms_norm_kernel[M,](
+                out, x1, x2, weight, N, N, 1, N, 1, N, eps, BLOCK_SIZE, need_mask
+            )
+    return out
