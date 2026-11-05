@@ -20,6 +20,7 @@ from ._amp_foreach_non_finite_check_and_unscale_ import (
 )
 from ._batch_norm_impl_index import batch_norm_impl_index as _batch_norm_impl_index
 from ._batch_norm_no_update import _batch_norm_no_update
+from ._cholesky_solve_helper import _cholesky_solve_helper
 from ._conj import _conj  # noqa: F401
 from ._dyn_quant_pack_4bit_weight import _dyn_quant_pack_4bit_weight
 from ._embedding_bag_dense_backward import _embedding_bag_dense_backward
@@ -27,6 +28,9 @@ from ._embedding_bag_per_sample_weights_backward import (  # noqa: F401
     _embedding_bag_per_sample_weights_backward,
 )
 from ._euclidean_dist import _euclidean_dist
+from ._fake_quantize_per_tensor_affine_cachemask_tensor_qparams import (  # noqa: F401
+    _fake_quantize_per_tensor_affine_cachemask_tensor_qparams,
+)
 from ._flash_attention_forward import _flash_attention_forward
 from ._foreach_abs_ import _foreach_abs_
 from ._foreach_add_list import _foreach_add_List
@@ -42,6 +46,11 @@ from ._foreach_atan import _foreach_atan, _foreach_atan_
 from ._foreach_binary import (  # noqa: F401
     _foreach_addcdiv_ScalarList,
     _foreach_addcdiv_Tensor,
+    _foreach_addcmul__Scalar,
+    _foreach_addcmul__ScalarList,
+    _foreach_addcmul__Tensor,
+    _foreach_addcmul_Tensor,
+    _foreach_lerp__List,
     _foreach_lerp_List,
     _foreach_mul_List,
     _foreach_sub_List,
@@ -71,7 +80,9 @@ from ._foreach_binary_scalar import (  # noqa: F401
     _foreach_mul__ScalarList,
     _foreach_pow__Scalar,
     _foreach_pow__ScalarList,
+    _foreach_pow_Scalar,
     _foreach_pow_ScalarAndTensor,
+    _foreach_pow_ScalarList,
     _foreach_sub__Scalar,
     _foreach_sub__ScalarList,
 )
@@ -103,6 +114,11 @@ from ._foreach_mul_list_ import _foreach_mul__List
 from ._foreach_neg import _foreach_neg, _foreach_neg_
 from ._foreach_pow_list import _foreach_pow_List  # noqa: F401
 from ._foreach_pow_list_ import _foreach_pow__List  # noqa: F401
+from ._foreach_reduction import (  # noqa: F401
+    _foreach_max,
+    _foreach_norm,
+    _foreach_norm_Scalar,
+)
 from ._foreach_round import _foreach_round
 from ._foreach_round_ import _foreach_round_
 from ._foreach_scalar_out import (  # noqa: F401
@@ -162,6 +178,7 @@ from ._native_batch_norm_legit_no_training import _native_batch_norm_legit_no_tr
 from ._nested_view_from_buffer_copy import _nested_view_from_buffer_copy
 from ._nested_view_from_jagged_copy import _nested_view_from_jagged_copy
 from ._pad_enum import _pad_enum
+from ._pad_packed_sequence import _pad_packed_sequence
 from ._pdist_backward import _pdist_backward
 from ._pdist_forward import _pdist_forward, pdist
 from ._prelu_kernel import _prelu_kernel  # noqa: F401
@@ -396,6 +413,9 @@ from .fake_quantize_per_channel_affine_cachemask import (  # noqa: F401
 from .fake_quantize_per_channel_affine_cachemask_backward import (  # noqa: F401
     fake_quantize_per_channel_affine_cachemask_backward,
 )
+from .fake_quantize_per_tensor_affine import (  # noqa: F401
+    fake_quantize_per_tensor_affine,
+)
 from .feature_dropout import feature_dropout, feature_dropout_
 from .fill import (
     fill_scalar,
@@ -576,6 +596,7 @@ from .matmul_int8 import matmul_int8
 from .matmuladd import matmuladd
 from .matrix_power import matrix_power, matrix_power_out
 from .max import max, max_dim
+from .max_pool1d_with_indices import max_pool1d_with_indices  # noqa: F401
 from .max_pool2d_with_indices import (
     max_pool2d_backward,
     max_pool2d_with_indices,
@@ -924,17 +945,20 @@ __all__ = [
     "_batch_norm_impl_index",
     "_batch_norm_no_update",
     "_cdist_backward",
+    "_cholesky_solve_helper",
     "_chunk_cat",
     "_conj",
     "_conv_depthwise2d",
     "_dyn_quant_pack_4bit_weight",
     "_embedding_bag_dense_backward",
     "_euclidean_dist",
+    "_fake_quantize_per_tensor_affine_cachemask_tensor_qparams",
     "_flash_attention_forward",
     "_foreach_abs_",
     "_foreach_acos",
     "_foreach_acos_",
     "_foreach_add__List",
+    "_foreach_add__Scalar",
     "_foreach_add__Tensor",
     "_foreach_add_List",
     "_foreach_add_Scalar",
@@ -946,19 +970,26 @@ __all__ = [
     "_foreach_addcdiv_Scalar",
     "_foreach_addcdiv_ScalarList",
     "_foreach_addcdiv_Tensor",
+    "_foreach_addcmul__Scalar",
+    "_foreach_addcmul__ScalarList",
+    "_foreach_addcmul__Tensor",
     "_foreach_addcmul_Scalar",
     "_foreach_addcmul_ScalarList",
+    "_foreach_addcmul_Tensor",
     "_foreach_asin",
     "_foreach_asin_",
     "_foreach_atan",
     "_foreach_atan_",
     "_foreach_ceil",
     "_foreach_ceil_",
+    "_foreach_clamp_min__ScalarList",
     "_foreach_copy",
     "_foreach_copy_",
     "_foreach_cos",
     "_foreach_cos_",
     "_foreach_div__List",
+    "_foreach_div__Scalar",
+    "_foreach_div__ScalarList",
     "_foreach_div__Tensor",
     "_foreach_div_List",
     "_foreach_div_Scalar",
@@ -974,6 +1005,7 @@ __all__ = [
     "_foreach_expm1_",
     "_foreach_floor",
     "_foreach_floor_",
+    "_foreach_lerp__List",
     "_foreach_lerp__Scalar",
     "_foreach_lerp__ScalarList",
     "_foreach_lerp_List",
@@ -988,6 +1020,7 @@ __all__ = [
     "_foreach_log2_",
     "_foreach_log_",
     "_foreach_mul__List",
+    "_foreach_mul__ScalarList",
     "_foreach_mul__Tensor",
     "_foreach_mul_List",
     "_foreach_mul_Scalar",
@@ -1014,6 +1047,7 @@ __all__ = [
     "_foreach_sqrt",
     "_foreach_sqrt_",
     "_foreach_sub__List",
+    "_foreach_sub__ScalarList",
     "_foreach_sub_List",
     "_foreach_sub_Scalar",
     "_foreach_sub_ScalarList",
@@ -1034,6 +1068,7 @@ __all__ = [
     "_nested_view_from_buffer_copy",
     "_nested_view_from_jagged_copy",
     "_pad_enum",
+    "_pad_packed_sequence",
     "_pdist_backward",
     "_pdist_forward",
     "_resize_output",
@@ -1279,6 +1314,7 @@ __all__ = [
     "fake_quantize_per_channel_affine_cachemask",
     "fake_quantize_per_channel_affine_cachemask_backward",
     "fake_quantize_per_channel_affine_cachemask_out",
+    "fake_quantize_per_tensor_affine",
     "feature_dropout",
     "feature_dropout_",
     "fill_scalar",
@@ -1493,6 +1529,7 @@ __all__ = [
     "matrix_power_out",
     "max",
     "max_dim",
+    "max_pool1d_with_indices",
     "max_pool2d_backward",
     "max_pool2d_with_indices",
     "max_pool2d_with_indices_backward",
