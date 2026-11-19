@@ -18901,6 +18901,33 @@ primal value saved by `fw_primal` into the caller-supplied `out` buffer.
   - Tensor
   stages:
   - stable: '3.0'
+- id: sparse_addmm
+  description: |
+    Computes beta * self + alpha * (mat1 @ mat2), where mat1 is a sparse 2-D
+    tensor (CSR/CSC/COO) and self and mat2 are dense. The result is a dense
+    (M, N) tensor; self follows the standard addmm bias broadcasting rules.
+  for:
+  - _sparse_addmm
+  labels:
+  - aten
+  - KernelGen
+  kind:
+  - BLAS
+  stages:
+  - alpha: '5.5.0'
+- id: sparse_addmm_out
+  description: |
+    A variant of _sparse_addmm that writes beta * self + alpha * (mat1 @ mat2)
+    into the provided dense out tensor.
+  for:
+  - _sparse_addmm.out
+  labels:
+  - aten
+  - KernelGen
+  kind:
+  - BLAS
+  stages:
+  - alpha: '5.5.0'
 - id: sparse_broadcast_to
   description: 'Broadcasts a sparse COO tensor to the target shape, replicating stored
     entries across newly prepended sparse dimensions and broadcast (size-1) dimensions.
@@ -19086,6 +19113,24 @@ primal value saved by `fw_primal` into the caller-supplied `out` buffer.
     '
   for:
   - _sparse_csc_tensor_unsafe
+  labels:
+  - aten
+  - KernelGen
+  kind:
+  - Tensor
+  stages:
+  - alpha: '5.5'
+- id: sparse_csr_prod
+  description: 'Multiplies the stored entries of a 2-D sparse CSR tensor along dim
+    and returns a sparse CSR tensor. Only stored entries participate, so the result
+    sparsity follows the layout; an implicit (unstored) zero is not multiplied in,
+    while an explicitly stored zero drives the product to zero.
+
+    '
+  for:
+  - _sparse_csr_prod
+  - _sparse_csr_prod.dim_dtype
+  - _sparse_csr_prod.dim_dtype_out
   labels:
   - aten
   - KernelGen
@@ -22662,11 +22707,35 @@ primal value saved by `fw_primal` into the caller-supplied `out` buffer.
     - Tensor
   stages:
     - alpha: '5.5.0'
+- id: validate_sparse_bsc_tensor_args
+  description: |
+    Validate sparse tensor arguments and index invariants without modifying inputs.
+  for:
+    - _validate_sparse_bsc_tensor_args
+  labels:
+    - aten
+    - KernelGen
+  kind:
+    - Tensor
+  stages:
+    - alpha: '5.5.0'
 - id: validate_sparse_bsr_tensor_args
   description: |
     Validate BSR tensor metadata and compressed index invariants.
   for:
     - _validate_sparse_bsr_tensor_args
+  labels:
+    - aten
+    - KernelGen
+  kind:
+    - Tensor
+  stages:
+    - alpha: '5.5.0'
+- id: validate_sparse_compressed_tensor_args
+  description: |
+    Validate sparse tensor arguments and index invariants without modifying inputs.
+  for:
+    - _validate_sparse_compressed_tensor_args
   labels:
     - aten
     - KernelGen
